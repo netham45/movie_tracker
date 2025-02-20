@@ -4,7 +4,7 @@ from typing import Dict, List
 from threading import Thread
 from config import logger, client
 from movie_queue import add_to_queue, remove_from_queue, suggestion_queue
-from movie_analysis import analyze_keywords
+from movie_analysis import analyze_keywords, recent_duplicates, normalize_title, extract_year
 
 def generate_single_suggestion(data: Dict, max_retries: int = 3, title: str = None) -> Dict:
     """Generate a single movie suggestion or get details for a specific movie."""
@@ -59,7 +59,13 @@ Requirements:
                 if preferred_keywords:
                     keyword_requirements = f"\nIMPORTANT: The suggested movie MUST include at least one of these keywords: {', '.join(preferred_keywords)}"
 
+                # Get recent duplicates to explicitly tell AI not to suggest them
+                recent_duplicate_titles = [title for title, _ in recent_duplicates]
+                recent_duplicates_str = f"\n\nCRITICAL - DO NOT SUGGEST THESE RECENTLY REJECTED MOVIES:\n{', '.join(recent_duplicate_titles)}" if recent_duplicate_titles else ""
+
                 prompt = f"""You are a movie expert. Based on the user's movie preferences:
+
+IMPORTANT: You must NOT suggest any movies that were recently rejected.{recent_duplicates_str}
 
 Movie History:
 - Watched Movies (with scores):
@@ -110,7 +116,28 @@ Requirements:
             logger.info(f"Received AI response for suggestion. Content length: {len(message.content[0].text)}")
             
             suggestion = json.loads(message.content[0].text)
-            logger.info(f"AI suggested movie: {suggestion['title']}")
+            suggested_title = suggestion['title']
+            logger.info(f"AI suggested movie: {suggested_title}")
+
+            # Check if this movie was recently rejected
+            suggested_normalized = normalize_title(suggested_title)
+            suggested_base, _ = extract_year(suggested_title)
+            suggested_base_normalized = normalize_title(suggested_base)
+            
+            is_recent_duplicate = False
+            for rejected_title, _ in recent_duplicates:
+                rejected_normalized = normalize_title(rejected_title)
+                rejected_base, _ = extract_year(rejected_title)
+                rejected_base_normalized = normalize_title(rejected_base)
+                
+                # Check both exact matches and similar titles
+                if suggested_normalized == rejected_normalized or suggested_base_normalized == rejected_base_normalized:
+                    logger.warning(f"AI suggested a recently rejected movie: {suggested_title} (matches {rejected_title})")
+                    is_recent_duplicate = True
+                    break
+            
+            if is_recent_duplicate:
+                continue
 
             if not title:  # Only validate keywords for suggestions, not specific movies
                 # Verify keywords match preferences if any are specified
