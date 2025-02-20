@@ -62,7 +62,7 @@ A full-stack application that helps you discover and track movies using AI-power
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/netham45/ai_movie_search
+git clone https://github.com/netham45/movie_tracker
 cd movie-suggestions
 ```
 

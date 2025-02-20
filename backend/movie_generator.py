@@ -114,7 +114,7 @@ Requirements:
                 }]
             )
             logger.info(f"Received AI response for suggestion. Content length: {len(message.content[0].text)}")
-            
+            print(message.content[0].text)
             suggestion = json.loads(message.content[0].text)
             suggested_title = suggestion['title']
             logger.info(f"AI suggested movie: {suggested_title}")
