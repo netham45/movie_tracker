@@ -61,3 +61,6 @@ Thumbs.db
 # Project specific
 backend/movie_suggestions.log
 backend/movies.yaml
+
+backend/cache/**
+backend/logs/**

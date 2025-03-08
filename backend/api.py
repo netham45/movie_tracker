@@ -6,8 +6,8 @@ from typing import Dict
 
 from config import logger, MOVIE_GENRES
 from models import Movie, MovieUpdate, PreferencesUpdate
-from movie_storage import load_movies, save_movies
-from movie_generator import get_movie_suggestion, fill_suggestion_queue, generate_single_suggestion
+from movie_storage import load_movies, save_movies, get_movie_poster
+from movie_generator import generate_single_suggestion
 from movie_analysis import analyze_keywords
 
 app = FastAPI()
@@ -53,8 +53,6 @@ def update_preferences(preferences: PreferencesUpdate):
     # Save changes
     save_movies(data)
     
-    # Start generating new suggestions
-    Thread(target=fill_suggestion_queue, args=(data,), daemon=True).start()
     
     return {"status": "success", "message": "Preferences updated successfully"}
 
@@ -64,7 +62,7 @@ def suggest_movie():
     logger.info("Received suggestion request")
     data = load_movies()
     try:
-        suggestion = get_movie_suggestion(data)
+        suggestion = generate_single_suggestion(data, reject_duplicates=True)
         logger.info(f"Returning suggestion: {suggestion['title']}")
         return suggestion
     except Exception as e:
@@ -78,20 +76,69 @@ def get_movie_details(title: str):
     data = load_movies()
     try:
         # Use the same suggestion generation but with a specific title
-        suggestion = generate_single_suggestion(data, title=title)
+        suggestion = generate_single_suggestion(data, title=title, reject_duplicates=False)  # No need to reject duplicates when getting details
         logger.info(f"Generated details for: {suggestion['title']}")
         return suggestion
     except Exception as e:
         logger.error(f"Error getting movie details: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the suggestion queue on startup."""
-    logger.info("Starting up movie suggestions service")
+from typing import List
+
+from pydantic import BaseModel
+
+class RelatedMovieRequest(BaseModel):
+    previous_suggestions: List[str]
+
+@app.post("/movies/related/{title}")
+def get_related_movie(title: str, request: RelatedMovieRequest):
+    """Get a single AI-generated related movie suggestion."""
+    logger.info(f"Getting related movie for: {title}")
+    logger.info(f"Previous suggestions: {request.previous_suggestions}")
     data = load_movies()
-    Thread(target=fill_suggestion_queue, args=(data,), daemon=True).start()
-    logger.info("Started initial queue filling thread")
+    
+    try:
+        # Check cache first
+        from movie_cache import get_unused_recommendations, add_recommendation
+        unused = get_unused_recommendations(title, request.previous_suggestions)
+        
+        if unused:
+            suggestion = unused[0]
+            logger.info(f"Using cached suggestion: {suggestion['title']}")
+        else:
+            # Generate new suggestion
+            suggestion = generate_single_suggestion(
+                data=data,
+                title=title,
+                previous_suggestions=request.previous_suggestions,
+                reject_duplicates=False  # Allow duplicates for related movies
+            )
+            # Add to cache
+            add_recommendation(title, suggestion)
+            logger.info(f"Generated new suggestion: {suggestion['title']}")
+        
+        # Check if movie is in any list
+        is_in_list = False
+        list_name = None
+        for lst in ["watched", "want_to_watch", "not_interested", "undecided"]:
+            if any(m["title"] == suggestion["title"] for m in data[lst]):
+                is_in_list = True
+                list_name = lst
+                break
+        
+        # Add list info to response
+        response = {
+            **suggestion,
+            "is_in_list": is_in_list,
+            "list_name": list_name
+        }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting related movie: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/movies/{list_name}")
 def add_movie(list_name: str, movie: Movie):
@@ -116,7 +163,8 @@ def add_movie(list_name: str, movie: Movie):
         "title": movie.title,
         "added_date": datetime.now().strftime("%Y-%m-%d"),
         "keywords": movie.keywords or [],  # Use provided keywords or empty list
-        "description": movie.description  # Store the description
+        "description": movie.description,  # Store the description
+        "credits": movie.credits.dict() if movie.credits else None  # Store credits if provided
     }
     
     if list_name == "watched":
@@ -160,6 +208,27 @@ def delete_movie(title: str):
     logger.info(f"Successfully deleted movie: {title}")
     return {"status": "success", "message": "Movie deleted successfully"}
 
+from urllib.parse import unquote
+
+@app.get("/movies/poster/{title}")
+async def get_poster(title: str):
+    """Get movie poster image with caching."""
+    decoded_title = unquote(title)
+    logger.info(f"Getting poster for movie: {decoded_title}")
+    
+    # Try with full title first (including year)
+    response = get_movie_poster(decoded_title)
+    if response:
+        return response
+    
+    # If that fails, try without the year
+    base_title = decoded_title.split('(')[0].strip()
+    response = get_movie_poster(base_title)
+    if response:
+        return response
+        
+    raise HTTPException(status_code=404, detail="Poster not found")
+
 @app.get("/movies/keywords")
 def get_keyword_analysis():
     """Get analysis of liked and disliked keywords."""
@@ -188,7 +257,9 @@ def update_movie(update: MovieUpdate):
                         "title": movie["title"],
                         "added_date": datetime.now().strftime("%Y-%m-%d"),
                         "keywords": movie.get("keywords", []),  # Preserve keywords when moving
-                        "description": movie.get("description")  # Preserve description when moving
+                        "description": movie.get("description"),  # Preserve description when moving
+                        "credits": movie.get("credits"),  # Preserve credits when moving
+                        "score": movie.get("score") if list_name == "watched" else None  # Preserve score if moving within watched list
                     }
                     
                     if update.new_list == "watched":

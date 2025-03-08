@@ -5,17 +5,18 @@ from config import logger
 # Track the last 5 duplicate movies to avoid re-suggesting them
 recent_duplicates: Deque[tuple[str, str]] = deque(maxlen=5)  # (title, reason)
 
-def analyze_keywords(data: Dict) -> Dict[str, int]:
+def analyze_keywords(data: Dict) -> Dict[str, Dict[str, int]]:
     """Analyze keyword frequency across watched movies with scores >= 7."""
     keyword_counts = Counter()
     disliked_keywords = Counter()
     
-    for movie in data["watched"]:
-        if movie.get("keywords"):
-            if movie.get("score", 0) >= 7:
-                keyword_counts.update(movie["keywords"])
-            else:
-                disliked_keywords.update(movie["keywords"])
+    if "watched" in data and isinstance(data["watched"], dict) and "movies" in data["watched"]:
+        for movie in data["watched"]["movies"]:
+            if movie.get("keywords"):
+                if movie.get("score", 0) >= 7:
+                    keyword_counts.update(movie["keywords"])
+                else:
+                    disliked_keywords.update(movie["keywords"])
     
     return {
         "liked": dict(keyword_counts),
